@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card shadow-sm">
+    <div class="card-header bg-danger text-white">
+        <h5 class="mb-0"><i class="bi bi-exclamation-octagon"></i> Dispose Item: {{ item.name }}</h5>
+    </div>
+    
+    <div class="card-body">
+        <form method="POST" id="disposalForm">
+            <div id="disposalEntries">
+                <!-- Disposal Entry -->
+                <div class="disposal-entry mb-3">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Location*</label>
+                            <select name="location" class="form-select" required>
+                                <option value="">Select Location</option>
+                                {% for location in locations %}
+                                    {% set item_loc = item.locations|selectattr('location_id', 'equalto', location.id)|first %}
+                                    <option value="{{ location.id }}" 
+                                            data-max="{{ item_loc.quantity }}">
+                                        {{ location.name }} (Available: {{ item_loc.quantity }})
+                                    </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        
+                        <div class="col-md-5">
+                            <label class="form-label">Quantity to Dispose*</label>
+                            <input type="number" name="quantity" 
+                                   class="form-control" 
+                                   min="1" 
+                                   required>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Other form fields remain the same -->
+            <div class="row g-3 mt-2">
+                <div class="col-md-6">
+                    <label class="form-label">Reason*</label>
+                    <select name="reason" class="form-select" required>
+                        <option value="damaged">Damaged</option>
+                        <option value="lost">Lost</option>
+                        <option value="stolen">Stolen</option>
+                        <option value="donated">Donated</option>
+                        <option value="other">Other</option>
+                    </select>
+                </div>
+                
+                <div class="col-md-6">
+                    <label class="form-label">Date*</label>
+                    <input type="date" name="date" 
+                           class="form-control" 
+                           value="{{ date_today }}" 
+                           required>
+                </div>
+            </div>
+
+            <div class="mb-3 mt-3">
+                <label class="form-label">Notes</label>
+                <textarea name="notes" class="form-control" rows="2"></textarea>
+            </div>
+
+            <button type="submit" class="btn btn-danger">
+                <i class="bi bi-check-circle"></i> Confirm Disposal
+            </button>
+            <a href="{{ url_for('index') }}" class="btn btn-secondary">
+                Cancel
+            </a>
+        </form>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Quantity validation logic
+    function updateQuantityMax(selectElement) {
+        const quantityInput = selectElement.closest('.disposal-entry').querySelector('input[name="quantity"]');
+        const maxQty = parseInt(selectElement.options[selectElement.selectedIndex].dataset.max || 0);
+        
+        quantityInput.max = maxQty;
+        quantityInput.setCustomValidity(
+            maxQty === 0 ? 'No quantity available in this location' : ''
+        );
+        
+        if(quantityInput.value > maxQty) {
+            quantityInput.value = maxQty;
+        }
+    }
+
+    // Initialize on load
+    document.querySelectorAll('select[name="location"]').forEach(select => {
+        updateQuantityMax(select);
+    });
+
+    // Update on location change
+    document.getElementById('disposalEntries').addEventListener('change', function(e) {
+        if (e.target.name === 'location') {
+            updateQuantityMax(e.target);
+        }
+    });
+});
+</script>
+{% endblock %}

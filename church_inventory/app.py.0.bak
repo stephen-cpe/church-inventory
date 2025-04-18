@@ -1,0 +1,609 @@
+# app.py
+from flask import Flask, render_template, request, send_file, redirect, url_for, flash
+from flask_sqlalchemy import SQLAlchemy
+from io import StringIO, BytesIO
+from datetime import datetime
+from flask_login import (
+    LoginManager,
+    UserMixin,
+    login_user,
+    login_required,
+    logout_user,
+    current_user
+)
+from werkzeug.security import generate_password_hash, check_password_hash
+import csv
+import zipfile
+import logging
+
+app = Flask(__name__)
+app.secret_key = 'w88Y9Z3Ae34JgvC6'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///inventory.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
+app.logger.setLevel(logging.DEBUG)
+handler = logging.FileHandler('app.log')
+app.logger.addHandler(handler)
+
+login_manager = LoginManager(app)
+login_manager.login_view = 'login'
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+# ---------- MODELS ---------- #
+class Location(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), unique=True, nullable=False)
+
+class Inventory(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    description = db.Column(db.String(200))
+    category = db.Column(db.String(50))
+    condition = db.Column(db.String(50))
+    
+    # Relationship to locations
+    locations = db.relationship('ItemLocation', backref='item', lazy=True)
+
+class ItemLocation(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    item_id = db.Column(db.Integer, db.ForeignKey('inventory.id'), nullable=False)
+    location_id = db.Column(db.Integer, db.ForeignKey('location.id'), nullable=False)
+    quantity = db.Column(db.Integer, default=0)
+    
+    location = db.relationship('Location', backref='items')
+
+class Movement(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    item_id = db.Column(db.Integer, db.ForeignKey('inventory.id'), nullable=False)
+    quantity = db.Column(db.Integer)
+    from_location_id = db.Column(db.Integer, db.ForeignKey('location.id'))
+    to_location_id = db.Column(db.Integer, db.ForeignKey('location.id'))
+    movement_date = db.Column(db.String(20))
+    responsible_person = db.Column(db.String(100))
+
+# Add to DisposedItem model
+class DisposedItem(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    item_id = db.Column(db.Integer, db.ForeignKey('inventory.id'), nullable=False)
+    reason = db.Column(db.String(100), nullable=False)  # lost/damaged/stolen/donated
+    disposal_date = db.Column(db.Date, nullable=False)
+    disposed_by = db.Column(db.String(100), nullable=False)
+    notes = db.Column(db.String(200))
+    # Relationship
+    item = db.relationship('Inventory', backref='disposals')
+    
+# Add User model
+class User(db.Model, UserMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(100), unique=True, nullable=False)
+    password_hash = db.Column(db.String(128), nullable=False)
+    is_admin = db.Column(db.Boolean, default=False)
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+# ---------- MIGRATION ---------- #
+def migrate_existing_data():
+    with app.app_context():
+        # Create default location
+        if not Location.query.filter_by(name='Main Storage').first():
+            default_loc = Location(name='Main Storage')
+            db.session.add(default_loc)
+            db.session.commit()
+
+        # Migrate old inventory quantities
+        for item in Inventory.query.all():
+            loc = Location.query.filter_by(name='Main Storage').first()
+            new_entry = ItemLocation(
+                item_id=item.id,
+                location_id=loc.id,
+                quantity=item.quantity
+            )
+            db.session.add(new_entry)
+        db.session.commit()
+
+# Create default admin user if not exists
+def create_default_admin():
+    with app.app_context():
+        if not User.query.filter_by(username='admin').first():
+            admin = User(username='admin', is_admin=True)
+            admin.set_password('admin')
+            db.session.add(admin)
+            db.session.commit()
+
+# Create database tables
+with app.app_context():
+    db.create_all()
+    # Only run once after initial setup!
+    #migrate_existing_data()
+    create_default_admin()
+# Add authentication routes
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        user = User.query.filter_by(username=username).first()
+        
+        if user and user.check_password(password):
+            login_user(user)
+            return redirect(url_for('index'))
+        return 'Invalid username or password'
+    return render_template('login.html')
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for('index'))
+
+@app.route('/register', methods=['GET', 'POST'])
+@login_required
+def register():
+    if not current_user.is_admin:
+        return 'Only admins can create users', 403
+        
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        is_admin = 'is_admin' in request.form
+        
+        if User.query.filter_by(username=username).first():
+            return 'Username already exists'
+            
+        user = User(username=username, is_admin=is_admin)
+        user.set_password(password)
+        db.session.add(user)
+        db.session.commit()
+        return redirect(url_for('index'))
+        
+    return render_template('register.html')
+
+# Protect existing routes by adding @login_required
+    
+# ---------- ROUTES ---------- #
+@app.route('/')
+@login_required
+def index():
+    inventory = Inventory.query.all()
+    locations = Location.query.all()
+    return render_template('index.html', 
+                         inventory=inventory,
+                         locations=locations)
+
+@app.route('/import_csv', methods=['POST'])
+@login_required
+def import_csv():
+    if 'csv_file' not in request.files:
+        return redirect(url_for('index'))
+    
+    file = request.files['csv_file']
+    if file.filename == '':
+        return redirect(url_for('index'))
+    
+    if file and file.filename.endswith('.csv'):
+        try:
+            stream = file.read().decode('utf-8').splitlines()
+            csv_file = csv.DictReader(stream)
+            
+            for row in csv_file:
+                # Get or create item
+                item = Inventory.query.filter_by(
+                    name=row['Name'],
+                    description=row['Description'],
+                    category=row['Category'],
+                    condition=row['Condition']
+                ).first()
+                
+                if not item:
+                    item = Inventory(
+                        name=row['Name'],
+                        description=row['Description'],
+                        category=row['Category'],
+                        condition=row['Condition']
+                    )
+                    db.session.add(item)
+                    db.session.commit()
+                
+                # Handle location
+                location = Location.query.filter_by(name=row['Location']).first()
+                if not location:
+                    location = Location(name=row['Location'])
+                    db.session.add(location)
+                    db.session.commit()
+                
+                # Update quantity
+                item_loc = ItemLocation.query.filter_by(
+                    item_id=item.id,
+                    location_id=location.id
+                ).first()
+                
+                if item_loc:
+                    item_loc.quantity += int(row['Quantity'])
+                else:
+                    item_loc = ItemLocation(
+                        item_id=item.id,
+                        location_id=location.id,
+                        quantity=int(row['Quantity'])
+                    )
+                    db.session.add(item_loc)
+                
+            db.session.commit()
+            flash('CSV imported successfully!', 'success')
+            
+        except Exception as e:
+            flash(f'Error importing CSV: {str(e)}', 'danger')
+    
+    return redirect(url_for('index'))
+
+@app.route('/export_csv')
+@login_required
+def export_csv():
+    buffer = BytesIO()
+    
+    with zipfile.ZipFile(buffer, 'w') as zip_file:
+        # Inventory CSV (now includes locations)
+        inventory_data = StringIO()
+        writer = csv.writer(inventory_data)
+        writer.writerow(['ID', 'Name', 'Description', 'Category', 'Condition', 'Location', 'Quantity'])
+        for item_loc in ItemLocation.query.all():
+            writer.writerow([
+                item_loc.item.id,
+                item_loc.item.name,
+                item_loc.item.description,
+                item_loc.item.category,
+                item_loc.item.condition,
+                item_loc.location.name,
+                item_loc.quantity
+            ])
+        zip_file.writestr('inventory.csv', inventory_data.getvalue().encode('utf-8'))
+        
+        # Movements CSV (updated with location names)
+        movements_data = StringIO()
+        writer = csv.writer(movements_data)
+        writer.writerow(['ID', 'Item ID', 'Item Name', 'Quantity', 'From Location', 'To Location', 'Date', 'Responsible'])
+        for move in Movement.query.all():
+            from_loc = Location.query.get(move.from_location_id).name if move.from_location_id else 'N/A'
+            to_loc = Location.query.get(move.to_location_id).name if move.to_location_id else 'N/A'
+            item_name = Inventory.query.get(move.item_id).name
+            writer.writerow([
+                move.id,
+                move.item_id,
+                item_name,
+                move.quantity,
+                from_loc,
+                to_loc,
+                move.movement_date,
+                move.responsible_person
+            ])
+        zip_file.writestr('movements.csv', movements_data.getvalue().encode('utf-8'))
+        
+        # Disposed Items CSV (remains similar)
+        disposed_data = StringIO()
+        writer = csv.writer(disposed_data)
+        writer.writerow(['ID', 'Item ID', 'Reason', 'Date', 'Notes'])
+        for item in DisposedItem.query.all():
+            writer.writerow([
+                item.id,
+                item.item_id,
+                item.reason,
+                item.disposal_date,
+                item.notes
+            ])
+        zip_file.writestr('disposed_items.csv', disposed_data.getvalue().encode('utf-8'))
+    
+    buffer.seek(0)
+    return send_file(
+        buffer,
+        download_name='inventory_export.zip',
+        as_attachment=True,
+        mimetype='application/zip'
+    )
+
+@app.route('/download_template')
+@login_required
+def download_template():
+    text_buffer = StringIO()
+    writer = csv.writer(text_buffer)
+    writer.writerow(['Name', 'Description', 'Category', 'Condition', 'Location', 'Quantity'])
+    writer.writerow(['Bible', 'NIV Hardcover', 'Books', 'New', 'Chapel Storage', 25])
+    text_buffer.seek(0)
+    return send_file(
+        BytesIO(text_buffer.getvalue().encode('utf-8')),
+        download_name='inventory_template.csv',
+        as_attachment=True,
+        mimetype='text/csv'
+    )
+# Add routes for adding/editing items, movements, and disposals here
+@app.route('/add_item', methods=['GET', 'POST'])
+@login_required
+def add_item():
+    if request.method == 'POST':
+        try:
+            # Get form data
+            name = request.form['name']
+            description = request.form['description']
+            category = request.form['category']
+            condition = request.form['condition']
+            location_name = request.form['location']
+            quantity = int(request.form['quantity'])
+
+            # Validate required fields
+            if not all([name, category, condition, location_name]):
+                flash('Please fill in all required fields', 'danger')
+                return redirect(url_for('add_item'))
+
+            # Create/get item
+            item = Inventory.query.filter_by(
+                name=name,
+                description=description,
+                category=category,
+                condition=condition
+            ).first()
+
+            if not item:
+                item = Inventory(
+                    name=name,
+                    description=description,
+                    category=category,
+                    condition=condition
+                )
+                db.session.add(item)
+                db.session.commit()
+
+            # Handle location
+            location = Location.query.filter_by(name=location_name).first()
+            if not location:
+                location = Location(name=location_name)
+                db.session.add(location)
+                db.session.commit()
+
+            # Update quantity
+            item_loc = ItemLocation.query.filter_by(
+                item_id=item.id,
+                location_id=location.id
+            ).first()
+
+            if item_loc:
+                item_loc.quantity += quantity
+            else:
+                item_loc = ItemLocation(
+                    item_id=item.id,
+                    location_id=location.id,
+                    quantity=quantity
+                )
+                db.session.add(item_loc)
+
+            db.session.commit()
+            flash('Item added successfully!', 'success')
+            return redirect(url_for('index'))
+
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Error adding item: {str(e)}', 'danger')
+            return redirect(url_for('add_item'))
+
+    # GET request - show form
+    categories = db.session.query(Inventory.category.distinct()).all()
+    conditions = db.session.query(Inventory.condition.distinct()).all()
+    locations = Location.query.all()
+    return render_template('add_item.html',
+                         categories=[c[0] for c in categories],
+                         conditions=[c[0] for c in conditions],
+                         locations=locations)
+
+@app.route('/edit_item/<int:item_id>', methods=['GET', 'POST'])
+@login_required
+def edit_item(item_id):
+    item = Inventory.query.get_or_404(item_id)
+    locations = ItemLocation.query.filter_by(item_id=item_id).all()
+    all_locations = Location.query.all()
+
+    if request.method == 'POST':
+        try:
+            # Update base item info
+            item.name = request.form['name']
+            item.description = request.form['description']
+            item.category = request.form['category']
+            item.condition = request.form['condition']
+
+            # Update location quantities
+            for loc in locations:
+                new_qty = int(request.form.get(f'loc_{loc.location_id}', 0))
+                if new_qty < 0:
+                    raise ValueError("Quantity cannot be negative")
+                loc.quantity = new_qty
+
+            db.session.commit()
+            flash('Item updated successfully!', 'success')
+            return redirect(url_for('index'))
+
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Error updating item: {str(e)}', 'danger')
+
+    return render_template('edit_item.html',
+                         item=item,
+                         locations=locations,
+                         all_locations=all_locations)
+                        
+@app.route('/transfer', methods=['GET', 'POST'])
+@app.route('/transfer/<int:item_id>', methods=['GET', 'POST'])
+@login_required
+def transfer(item_id=None):
+    date_today = datetime.today().strftime('%Y-%m-%d')
+    
+    if request.method == 'POST':
+        try:
+            item_id = int(request.form['item_id'])
+            from_loc_id = int(request.form['from_location'])
+            to_loc_id = int(request.form['to_location'])
+            quantity = int(request.form['quantity'])
+            responsible = request.form['responsible']
+            date = request.form['date']
+
+            # Validate locations
+            if from_loc_id == to_loc_id:
+                raise ValueError("Cannot transfer to same location")
+
+            # Get existing quantities
+            source = ItemLocation.query.filter_by(
+                item_id=item_id, 
+                location_id=from_loc_id
+            ).first()
+            
+            if not source or source.quantity < quantity:
+                raise ValueError("Insufficient quantity in source location")
+
+            # Perform transfer
+            source.quantity -= quantity
+            
+            destination = ItemLocation.query.filter_by(
+                item_id=item_id,
+                location_id=to_loc_id
+            ).first()
+            
+            if destination:
+                destination.quantity += quantity
+            else:
+                destination = ItemLocation(
+                    item_id=item_id,
+                    location_id=to_loc_id,
+                    quantity=quantity
+                )
+                db.session.add(destination)
+
+            # Record movement
+            movement = Movement(
+                item_id=item_id,
+                quantity=quantity,
+                from_location_id=from_loc_id,
+                to_location_id=to_loc_id,
+                movement_date=date,
+                responsible_person=responsible
+            )
+            db.session.add(movement)
+            
+            db.session.commit()
+            flash('Transfer successful!', 'success')
+            return redirect(url_for('index'))
+
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Transfer failed: {str(e)}', 'danger')
+
+    # GET request handling
+    items = Inventory.query.all()
+    locations = Location.query.all()
+    selected_item = None
+    source_locations = []
+    
+    if item_id:
+        selected_item = Inventory.query.get_or_404(item_id)
+        source_locations = ItemLocation.query.filter_by(item_id=item_id).all()
+    
+    return render_template('transfer.html',
+                         items=items,
+                         locations=locations,
+                         selected_item=selected_item,
+                         source_locations=source_locations,
+                         date_today=date_today)
+
+
+@app.route('/delete_item/<int:item_id>', methods=['POST'])
+@login_required
+def delete_item(item_id):
+    if not current_user.is_admin:
+        abort(403)
+        
+    item = Inventory.query.get_or_404(item_id)
+    try:
+        # Delete related records
+        ItemLocation.query.filter_by(item_id=item_id).delete()
+        Movement.query.filter_by(item_id=item_id).delete()
+        DisposedItem.query.filter_by(item_id=item_id).delete()
+        
+        # Delete main item
+        db.session.delete(item)
+        db.session.commit()
+        flash('Item deleted successfully', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Deletion failed: {str(e)}', 'danger')
+    
+    return redirect(url_for('index'))
+    
+@app.route('/disposed')
+@login_required
+def disposed_items():
+    disposed = DisposedItem.query.order_by(DisposedItem.disposal_date.desc()).all()
+    return render_template('disposed.html', disposed_items=disposed)
+    
+# Update disposal in existing routes
+@app.route('/dispose_item/<int:item_id>', methods=['GET', 'POST'])
+@login_required
+def dispose_item(item_id):
+    item = Inventory.query.get_or_404(item_id)
+    
+    if request.method == 'POST':
+        try:
+            # Get form data
+            reason = request.form['reason']
+            notes = request.form.get('notes', '')
+            disposal_date = datetime.strptime(request.form['date'], '%Y-%m-%d').date()
+            
+            # Get total quantity
+            total_qty = sum(loc.quantity for loc in item.locations)
+            
+            # Create disposal record
+            disposal = DisposedItem(
+                item_id=item.id,
+                reason=reason,
+                disposal_date=disposal_date,
+                disposed_by=current_user.username,
+                notes=notes,
+                original_quantity=total_qty
+            )
+            
+            # Remove from regular inventory
+            ItemLocation.query.filter_by(item_id=item.id).delete()
+            
+            db.session.add(disposal)
+            db.session.commit()
+            
+            flash(f'{item.name} disposed successfully', 'success')
+            return redirect(url_for('index'))
+            
+        except Exception as e:
+            db.session.rollback()
+            flash(f'Disposal failed: {str(e)}', 'danger')
+    
+    return render_template('dispose_form.html', 
+                         item=item,
+                         date_today=datetime.now().date())
+                         
+@app.route('/search')
+@login_required
+def search():
+    query = request.args.get('q', '')
+    
+    results = Inventory.query.filter(
+        db.or_(
+            Inventory.name.ilike(f'%{query}%'),
+            Inventory.description.ilike(f'%{query}%'),
+            Inventory.category.ilike(f'%{query}%')
+        )
+    ).all()
+    
+    return render_template('index.html', 
+                         inventory=results,
+                         search_query=query)
+
+if __name__ == '__main__':
+    app.run(debug=True)

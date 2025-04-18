@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Add New Inventory Item</h2>
+
+<form method="POST">
+    <div class="mb-3">
+        <label class="form-label">Item Name*</label>
+        <input type="text" class="form-control" name="name" required>
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Description</label>
+        <textarea class="form-control" name="description" rows="2"></textarea>
+    </div>
+
+    <div class="row">
+        <div class="col-md-4 mb-3">
+            <label class="form-label">Category*</label>
+            <input type="text" class="form-control" name="category" list="categories" required>
+            <datalist id="categories">
+                {% for category in categories %}
+                <option value="{{ category }}">
+                {% endfor %}
+            </datalist>
+        </div>
+
+        <div class="col-md-4 mb-3">
+            <label class="form-label">Condition*</label>
+            <input type="text" class="form-control" name="condition" list="conditions" required>
+            <datalist id="conditions">
+                {% for condition in conditions %}
+                <option value="{{ condition }}">
+                {% endfor %}
+            </datalist>
+        </div>
+
+        <div class="col-md-4 mb-3">
+            <label class="form-label">Location*</label>
+            <input type="text" class="form-control" name="location" list="locations" required>
+            <datalist id="locations">
+                {% for location in locations %}
+                <option value="{{ location.name }}">
+                {% endfor %}
+            </datalist>
+        </div>
+    </div>
+
+    <div class="mb-3">
+        <label class="form-label">Quantity*</label>
+        <input type="number" class="form-control" name="quantity" min="1" value="1" required>
+    </div>
+
+    <button type="submit" class="btn btn-primary">Add Item</button>
+    <a href="{{ url_for('index') }}" class="btn btn-secondary">Cancel</a>
+</form>
+
+{% endblock %}

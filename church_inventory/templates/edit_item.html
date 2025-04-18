@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Edit {{ item.name }}</h2>
+
+<form method="POST">
+    <div class="mb-3">
+        <label>Item Name</label>
+        <input type="text" name="name" class="form-control" value="{{ item.name }}" required>
+    </div>
+
+    <div class="mb-3">
+        <label>Description</label>
+        <textarea name="description" class="form-control">{{ item.description }}</textarea>
+    </div>
+
+    <div class="row">
+        <div class="col-md-6">
+            <label>Category</label>
+            <input type="text" name="category" class="form-control" value="{{ item.category }}" required>
+        </div>
+        
+        <div class="col-md-6">
+            <label>Condition</label>
+            <input type="text" name="condition" class="form-control" value="{{ item.condition }}" required>
+        </div>
+    </div>
+
+    <h4 class="mt-4">Location Quantities</h4>
+    {% for loc in locations %}
+    <div class="mb-3">
+        <label>{{ loc.location.name }} Quantity</label>
+        <input type="number" name="loc_{{ loc.location_id }}" class="form-control" 
+               value="{{ loc.quantity }}" min="0">
+    </div>
+    {% endfor %}
+
+    <button type="submit" class="btn btn-primary">Save Changes</button>
+    <a href="{{ url_for('index') }}" class="btn btn-secondary">Cancel</a>
+</form>
+{% endblock %}
